@@ -21,6 +21,7 @@ import android.media.ExifInterface;
 import com.lidroid.xutils.BitmapUtils;
 import com.lidroid.xutils.bitmap.BitmapDisplayConfig;
 import com.lidroid.xutils.bitmap.BitmapGlobalConfig;
+import com.lidroid.xutils.bitmap.factory.BitmapFactory;
 import com.lidroid.xutils.cache.FileNameGenerator;
 import com.lidroid.xutils.cache.LruDiskCache;
 import com.lidroid.xutils.cache.LruMemoryCache;
@@ -39,7 +40,7 @@ public class BitmapCache {
     private LruMemoryCache<MemoryCacheKey, Bitmap> mMemoryCache;
 
     private final Object mDiskCacheLock = new Object();
-    private boolean isDiskCacheReadied = false;
+    private volatile boolean isDiskCacheReady = false;
 
     private BitmapGlobalConfig globalConfig;
 
@@ -106,7 +107,7 @@ public class BitmapCache {
                     }
                 }
             }
-            isDiskCacheReadied = true;
+            isDiskCacheReady = true;
             mDiskCacheLock.notifyAll();
         }
     }
@@ -142,7 +143,7 @@ public class BitmapCache {
             if (globalConfig.isDiskCacheEnabled()) {
                 synchronized (mDiskCacheLock) {
                     // Wait for disk cache to initialize
-                    while (!isDiskCacheReadied) {
+                    while (!isDiskCacheReady) {
                         try {
                             mDiskCacheLock.wait();
                         } catch (Throwable e) {
@@ -196,10 +197,7 @@ public class BitmapCache {
 
             if (bitmap != null) {
                 bitmap = rotateBitmapIfNeeded(uri, config, bitmap);
-                if (config != null && config.getImageFactory() != null) {
-                    bitmap = config.getImageFactory().createBitmap(bitmap);
-                }
-                addBitmapToMemoryCache(uri, config, bitmap, bitmapMeta.expiryTimestamp);
+                bitmap = addBitmapToMemoryCache(uri, config, bitmap, bitmapMeta.expiryTimestamp);
             }
             return bitmap;
         } catch (Throwable e) {
@@ -212,11 +210,18 @@ public class BitmapCache {
         return null;
     }
 
-    private void addBitmapToMemoryCache(String uri, BitmapDisplayConfig config, Bitmap bitmap, long expiryTimestamp) throws IOException {
+    private Bitmap addBitmapToMemoryCache(String uri, BitmapDisplayConfig config, Bitmap bitmap, long expiryTimestamp) throws IOException {
+        if (config != null) {
+            BitmapFactory bitmapFactory = config.getBitmapFactory();
+            if (bitmapFactory != null) {
+                bitmap = bitmapFactory.cloneNew().createBitmap(bitmap);
+            }
+        }
         if (uri != null && bitmap != null && globalConfig.isMemoryCacheEnabled() && mMemoryCache != null) {
             MemoryCacheKey key = new MemoryCacheKey(uri, config);
             mMemoryCache.put(key, bitmap, expiryTimestamp);
         }
+        return bitmap;
     }
 
     /**
@@ -257,7 +262,7 @@ public class BitmapCache {
     public Bitmap getBitmapFromDiskCache(String uri, BitmapDisplayConfig config) {
         if (uri == null || !globalConfig.isDiskCacheEnabled()) return null;
         synchronized (mDiskCacheLock) {
-            while (!isDiskCacheReadied) {
+            while (!isDiskCacheReady) {
                 try {
                     mDiskCacheLock.wait();
                 } catch (Throwable e) {
@@ -281,7 +286,7 @@ public class BitmapCache {
                     }
 
                     bitmap = rotateBitmapIfNeeded(uri, config, bitmap);
-                    addBitmapToMemoryCache(uri, config, bitmap, mDiskLruCache.getExpiryTimestamp(uri));
+                    bitmap = addBitmapToMemoryCache(uri, config, bitmap, mDiskLruCache.getExpiryTimestamp(uri));
                     return bitmap;
                 }
             } catch (Throwable e) {
@@ -317,7 +322,7 @@ public class BitmapCache {
                     LogUtils.e(e.getMessage(), e);
                 }
                 mDiskLruCache = null;
-                isDiskCacheReadied = false;
+                isDiskCacheReady = false;
             }
         }
         initDiskCache();
